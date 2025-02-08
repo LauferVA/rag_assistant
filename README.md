@@ -67,4 +67,4 @@ print("Answer:", answer)
 assistant.add_completion(answer)
 ```
 
-Enjoy using RAG Assistant!
+Enjoy!
