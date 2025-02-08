@@ -1,7 +1,16 @@
 # RAG Assistant
 
-**RAG Assistant** is a local tool that retrieves and generates intelligent answers from a collection of text files on your computer. Instead of a simple keyword search, it uses modern 
-embedding and generation models to understand file content and produce detailed, thoughtful responses.
+**RAG Assistant** is an entirely free, open, and local tool that retrieves and generates intelligent answers from a collection of text files on your computer. Instead of a simple keyword search, it uses modern 
+embedding and generation models to understand file content and produce detailed responses.
+
+## Overview (more detail below):
+- Free: This RAG implementation uses best-in-class free resources: e5-large-v2 for embedding and Mistral-7B Instruct for generation.
+- Private: Your data stay private and local!
+- GPU requirements: It is designed for low resource settings, and will run on as little as 4Gb VRAM.
+- Store helpful completions for later retrieval with `rag_assistant.add_completion`
+- Efficient re-indexing: Automated, indexing and re-indexing of only files that are altered.
+- Supports custom instructions
+
 
 ## How It Works
 
