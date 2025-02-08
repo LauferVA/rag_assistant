@@ -1,0 +1,24 @@
+# Python-related
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Virtual environments
+venv/
+.env/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# OS-specific
+.DS_Store  # macOS
+Thumbs.db  # Windows
+
+# IDE-related (optional)
+.vscode/
+.idea/
+
