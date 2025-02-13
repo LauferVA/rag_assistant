@@ -1,111 +1,183 @@
-# rag_assistant/file_indexer.py
+# rag_assistant/file_parsers.py
 
 import os
 import logging
-import numpy as np
-from sentence_transformers import SentenceTransformer
-
-from . import file_parsers  # Import our new parser module
 
 logger = logging.getLogger(__name__)
 
-class FileIndexer:
-    def __init__(
-        self,
-        data_dir,
-        max_file_size=5 * 1024 * 1024,  # Default: skip files >5MB
-        model_name="intfloat/e5-large-v2",
+# ---------------------------------------------------------------------
+# Optional Imports: wrap them in try/except so we don't force users
+# to install everything if they only need minimal text indexing.
+# ---------------------------------------------------------------------
+try:
+    import docx  # For .docx
+except ImportError:
+    docx = None
+
+try:
+    import fitz  # PyMuPDF for PDFs
+except ImportError:
+    fitz = None
+
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+
+try:
+    import openpyxl  # For .xlsx
+except ImportError:
+    openpyxl = None
+
+try:
+    import odf.text, odf.teletype, odf.opendocument  # For .odt
+except ImportError:
+    odf = None
+
+import json
+
+
+def extract_text_from_file(filepath):
+    """
+    Attempt to extract text from the given filepath, based on its extension.
+    Return an empty string if parsing fails or is not supported.
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # Simple text-based extensions
+    if ext in (
+        ".txt", ".md", ".py", ".json", ".log", ".csv", ".tsv", ".xml",
+        ".yaml", ".yml", ".html", ".htm", ".css", ".js", ".jsx", ".ts",
+        ".tsx", ".sh", ".cmd", ".ps1", ".swift", ".kt", ".go", ".rs",
+        ".lua", ".pl", ".r", ".m", ".vb", ".cs", ".asm", ".dart", ".php",
+        ".rb", ".sql"
     ):
-        """
-        A more advanced FileIndexer that can parse multiple file types,
-        skipping files that are too large or not supported.
-        
-        :param data_dir: Directory to index.
-        :param max_file_size: Maximum file size (in bytes) to index.
-        :param model_name: Hugging Face model for embeddings (default: e5-large-v2).
-        """
-        self.data_dir = data_dir
-        self.max_file_size = max_file_size
-        self.index = {}  # { filepath: {"content": str, "embedding": np.array} }
-        self.embedder = SentenceTransformer(model_name)
+        return _read_plaintext(filepath)
 
-    def update_index(self):
-        """
-        Walk through the data_dir, parse and embed allowed files, store in self.index.
-        """
-        self.index = {}
+    # DOCX
+    if ext == ".docx":
+        return _read_docx(filepath) if docx else ""
 
-        # Common file extensions to parse. Adjust as needed.
-        allowed_extensions = (
-            ".txt", ".md", ".py", ".json", ".log", ".csv", ".tsv",
-            ".docx", ".doc", ".pdf", ".rtf", ".odt", ".xls", ".xlsx", ".xlsm", ".ods",
-            ".ppt", ".pptx", ".odp", ".ipynb", ".xml", ".yaml", ".yml",
-            ".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx",
-            ".sh", ".cmd", ".ps1", ".swift", ".kt", ".go", ".rs", ".lua",
-            ".pl", ".r", ".m", ".vb", ".cs", ".asm", ".dart", ".php", ".rb", ".sql"
-        )
+    # Older .doc or .rtf files: not fully supported in Python by default.
+    if ext in (".doc", ".rtf"):
+        logger.warning("Native reading not implemented for %s. Consider external tools.", ext)
+        return ""
 
-        for root, dirs, files in os.walk(self.data_dir):
-            for file_name in files:
-                ext = os.path.splitext(file_name)[1].lower()
-                if ext not in allowed_extensions:
-                    # Skip unsupported extensions.
-                    continue
+    # PDF
+    if ext == ".pdf":
+        if fitz:
+            return _read_pdf_pymupdf(filepath)
+        elif PyPDF2:
+            return _read_pdf_pypdf2(filepath)
+        else:
+            logger.warning("No PDF library installed; cannot parse %s", filepath)
+            return ""
 
-                filepath = os.path.join(root, file_name)
+    # ODT
+    if ext == ".odt":
+        return _read_odt(filepath) if odf else ""
 
-                # Check file size
-                try:
-                    size = os.path.getsize(filepath)
-                    if size > self.max_file_size:
-                        logger.debug("Skipping large file %s (size %d bytes)", filepath, size)
-                        continue
-                except Exception as e:
-                    logger.error("Error checking size of %s: %s", filepath, e)
-                    continue
+    # XLSX, XLS, ODS
+    if ext in (".xlsx", ".xlsm", ".xls", ".ods"):
+        return _read_excel(filepath) if openpyxl else ""
 
-                # Extract text
-                content = file_parsers.extract_text_from_file(filepath)
-                if not content.strip():
-                    # If no text was extracted or empty
-                    logger.debug("No text extracted from %s; skipping embedding.", filepath)
-                    continue
+    # PPT, PPTX, ODP
+    # (python-pptx can handle .pptx, but not .ppt or .odp well)
+    if ext in (".pptx", ".ppt", ".odp"):
+        logger.warning("PPT/ODP parsing not implemented. Skipping %s", filepath)
+        return ""
 
-                # Compute embedding
-                try:
-                    embedding = self.embedder.encode(content, convert_to_numpy=True)
-                    self.index[filepath] = {"content": content, "embedding": embedding}
-                    logger.debug("Indexed file: %s", filepath)
-                except Exception as e:
-                    logger.error("Error embedding file %s: %s", filepath, e)
+    # IPYNB
+    if ext == ".ipynb":
+        return _read_ipynb(filepath)
 
-        logger.info("Indexed %d files.", len(self.index))
+    # Fallback
+    logger.debug("No parsing rule for %s; skipping.", filepath)
+    return ""
 
-    def cosine_similarity(self, vec1, vec2):
-        """Compute the cosine similarity between two vectors."""
-        dot = np.dot(vec1, vec2)
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        return dot / (norm1 * norm2)
 
-    def search(self, query, top_n=3):
-        """
-        Search for relevant files using cosine similarity between the query embedding and file embeddings.
+def _read_plaintext(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logger.error("Error reading plaintext file %s: %s", filepath, e)
+        return ""
 
-        :param query: The search query string.
-        :param top_n: Number of top matches to return.
-        :return: List of tuples: (filepath, similarity_score, content).
-        """
-        query_embedding = self.embedder.encode(query, convert_to_numpy=True)
-        results = []
 
-        for filepath, data in self.index.items():
-            file_embedding = data["embedding"]
-            score = self.cosine_similarity(query_embedding, file_embedding)
-            if score > 0:
-                results.append((filepath, score, data["content"]))
+def _read_docx(filepath):
+    if not docx:
+        return ""
+    try:
+        doc = docx.Document(filepath)
+        paragraphs = [p.text for p in doc.paragraphs]
+        return "\n".join(paragraphs)
+    except Exception as e:
+        logger.error("Error reading DOCX %s: %s", filepath, e)
+        return ""
 
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_n]
+
+def _read_pdf_pymupdf(filepath):
+    try:
+        text_pages = []
+        with fitz.open(filepath) as pdf_doc:
+            for page in pdf_doc:
+                text_pages.append(page.get_text())
+        return "\n".join(text_pages)
+    except Exception as e:
+        logger.error("Error reading PDF (PyMuPDF) %s: %s", filepath, e)
+        return ""
+
+
+def _read_pdf_pypdf2(filepath):
+    try:
+        text_pages = []
+        with open(filepath, "rb") as f:
+            pdf = PyPDF2.PdfReader(f)
+            for page_num in range(len(pdf.pages)):
+                text_pages.append(pdf.pages[page_num].extract_text() or "")
+        return "\n".join(text_pages)
+    except Exception as e:
+        logger.error("Error reading PDF (PyPDF2) %s: %s", filepath, e)
+        return ""
+
+
+def _read_odt(filepath):
+    try:
+        doc = odf.opendocument.load(filepath)
+        text_elements = doc.getElementsByType(odf.text.P)
+        paragraphs = [odf.teletype.extractText(elem) for elem in text_elements]
+        return "\n".join(paragraphs)
+    except Exception as e:
+        logger.error("Error reading ODT %s: %s", filepath, e)
+        return ""
+
+
+def _read_excel(filepath):
+    try:
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        text_chunks = []
+        for name in wb.sheetnames:
+            sheet = wb[name]
+            for row in sheet.iter_rows(values_only=True):
+                row_str = "\t".join(str(x) if x is not None else "" for x in row)
+                text_chunks.append(row_str)
+        return "\n".join(text_chunks)
+    except Exception as e:
+        logger.error("Error reading Excel file %s: %s", filepath, e)
+        return ""
+
+
+def _read_ipynb(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        text_cells = []
+        for cell in data.get("cells", []):
+            # Combine source lines into a single text block
+            cell_src = "".join(cell.get("source", []))
+            text_cells.append(cell_src)
+        return "\n".join(text_cells)
+    except Exception as e:
+        logger.error("Error reading IPYNB %s: %s", filepath, e)
+        return ""
